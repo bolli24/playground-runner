@@ -1,0 +1,13 @@
+[Unit]
+Description=Pull the playground language images
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Remove playground images left dangling by the previous pull first. The runner switches to a new
+# image within a minute, so by the next run nothing uses them anymore. The label filter keeps this
+# away from other services' images.
+ExecStart=/usr/bin/docker image prune --force --filter label=playground.contract
+ExecStart=/usr/bin/docker pull --quiet ghcr.io/bolli24/luga:playground

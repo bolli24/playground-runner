@@ -1,0 +1,14 @@
+# Production config, installed as /etc/playground-runner/runner.toml.
+
+runtime = "runsc"
+# Job directories are bind-mounted into containers, so they must be visible to the Docker daemon.
+# The service's own /tmp is private, so jobs go to its state directory instead.
+work_dir = "/var/lib/playground-runner"
+
+[server]
+# Caddy proxies run.henrikhuth.de to this. Port 3000 is taken by another service on the VPS.
+listen = "127.0.0.1:3100"
+allowed_origins = ["https://henrikhuth.de"]
+
+[languages.luga]
+image = "ghcr.io/bolli24/luga:playground"

@@ -1,0 +1,41 @@
+# Builds the runner on every push to main and publishes the binary to the rolling "latest"
+# release, where deploy/update-runner.sh downloads it from.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Same Ubuntu release as the VPS, so the binary links against a compatible glibc
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset=playground-runner-x86_64-linux
+          cp target/release/playground-runner "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          if ! gh release view latest > /dev/null 2>&1; then
+            gh release create latest --title "Latest build" --notes "Built from $GITHUB_SHA"
+          fi
+          gh release upload latest "$asset" "$asset.sha256" --clobber
+          gh release edit latest --notes "Built from $GITHUB_SHA"

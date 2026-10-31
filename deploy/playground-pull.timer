@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull the playground language images every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

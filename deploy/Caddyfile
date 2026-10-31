@@ -1,0 +1,8 @@
+{
+	# tailscaled already listens on port 443 of the Tailscale address, so only bind the public one
+	default_bind 169.58.192.5
+}
+
+run.henrikhuth.de {
+	reverse_proxy 127.0.0.1:3100
+}

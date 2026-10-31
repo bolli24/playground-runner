@@ -1,0 +1,30 @@
+[Unit]
+Description=Playground runner
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/playground-runner --config /etc/playground-runner/runner.toml serve
+Restart=on-failure
+RestartSec=5
+
+User=playground-runner
+Group=playground-runner
+# Access to the Docker socket. This is effectively root, so the hardening below matters.
+SupplementaryGroups=docker
+StateDirectory=playground-runner
+Environment=DOCKER_CONFIG=/var/lib/playground-runner/.docker
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
