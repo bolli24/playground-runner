@@ -6,3 +6,6 @@ allowed_origins = ["http://localhost:4321"]
 
 [languages.luga]
 image = "luga-playground"
+
+[languages.fluke]
+image = "fluke-playground"

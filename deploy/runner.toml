@@ -12,3 +12,6 @@ allowed_origins = ["https://henrikhuth.de"]
 
 [languages.luga]
 image = "ghcr.io/bolli24/luga:playground"
+
+[languages.fluke]
+image = "ghcr.io/bolli24/fluke:playground"

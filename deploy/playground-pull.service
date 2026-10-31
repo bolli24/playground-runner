@@ -10,4 +10,6 @@ Type=oneshot
 # image within a minute, so by the next run nothing uses them anymore. The label filter keeps this
 # away from other services' images.
 ExecStart=/usr/bin/docker image prune --force --filter label=playground.contract
-ExecStart=/usr/bin/docker pull --quiet ghcr.io/bolli24/luga:playground
+# "-": one language's failed pull mustn't keep the other from updating
+ExecStart=-/usr/bin/docker pull --quiet ghcr.io/bolli24/luga:playground
+ExecStart=-/usr/bin/docker pull --quiet ghcr.io/bolli24/fluke:playground

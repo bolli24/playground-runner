@@ -165,6 +165,9 @@ impl Executor {
             args.push(format!("--runtime={runtime}"));
         }
         args.extend([
+            // An init process as PID 1, so the program isn't: signals with default handlers are
+            // ignored for PID 1, which turns e.g. abort() into a crash with the wrong exit code
+            "--init".to_string(),
             "--network=none".to_string(),
             "--read-only".to_string(),
             "--cap-drop=ALL".to_string(),

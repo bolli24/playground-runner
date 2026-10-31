@@ -90,6 +90,9 @@ Environment variables:
 Further guarantees and restrictions:
 
 - Runs as an unprivileged user (uid/gid 65534), with no capabilities and no network access.
+- An init process runs as PID 1 and starts `/playground/run`, so neither the adapter nor the program
+  is PID 1. Signals behave normally (Linux ignores default-handled signals for PID 1, which turns
+  `abort()` into a crash), and the init process passes the exit status through.
 - Runs under gVisor in production and CI. Toolchains must not depend on features gVisor lacks.
 - Limits apply to the whole container (compile and run together): wall time, memory, PIDs, CPU,
   and output size. The exact values are runner configuration, not part of the contract.
@@ -296,13 +299,29 @@ Not part of the contract; things the current images need to get right.
 ### fluke
 
 - `fluke build` takes a single file, so the image doesn't declare `multi-file`.
-- Build the compiler with the `dotnet/sdk` image, run on `dotnet/runtime`. Set in the image:
-  - `DOTNET_NOLOGO=1`, `DOTNET_CLI_TELEMETRY_OPTOUT=1`
-  - `DOTNET_EnableDiagnostics=0` so the runtime doesn't create diagnostic sockets in `/tmp`
-  - `DOTNET_EnableWriteXorExecute=0` if W^X double-mapping causes trouble under gVisor
-    (also speeds up startup)
-- Each job starts .NET twice (compiler, then program). Publishing the compiler ReadyToRun cuts
-  startup time.
+- `fluke build` writes to `./target` and prints source paths as given, so `run.sh` copies the
+  sources into `/work/build` and builds there. Its progress output is only shown when the build
+  fails. The program then runs as `dotnet target/<name>.dll`.
+- fluke's exit codes map to the contract like this:
+
+  | fluke | Meaning | Contract |
+  |---|---|---|
+  | 0 | success | marker, then run the program |
+  | 1 | I/O: the source couldn't be read or the output written | `101` |
+  | 2 | invalid command-line arguments | `101` |
+  | 3 | compile error: lexing, parsing, type checking | `100` |
+  | 4 | internal compiler error | `101` |
+  | other | unexpected | `101` |
+
+  A program's own exit code comes from `:exit(code)`. A failed `:assert` is an unhandled .NET
+  exception, which ends the program with `134` (SIGABRT).
+- fluke has no loops, so the `infinite_loop` fixture is naive Fibonacci of 60.
+- The compiler is built with the `dotnet/sdk` image (ReadyToRun, since it starts once per job) and
+  runs on `dotnet/runtime`, with `DOTNET_NOLOGO=1`, `DOTNET_CLI_TELEMETRY_OPTOUT=1` and
+  `DOTNET_EnableDiagnostics=0` so the runtime doesn't create diagnostic sockets in `/tmp`.
+- The linter is `fluke.Wasm`, published with the `wasm-tools` workload. `linter/` holds its
+  `_framework/` (the .NET runtime and assemblies as wasm, a few MB) and `index.js`, which wraps
+  `Linter.Check` and only checks the entry file.
 
 ### Neither language
 

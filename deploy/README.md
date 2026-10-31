@@ -18,9 +18,9 @@ on every push to main. Language images come from GHCR; the pull timer fetches `:
 ## Before starting
 
 - Push this repo's main branch so the release workflow has published a binary.
-- Make the `luga` package on GHCR public (*github.com/bolli24 → Packages → luga → Package settings →
-  Change visibility*). Otherwise the VPS needs `docker login ghcr.io` with a token that has
-  `read:packages`.
+- Make the `luga` and `fluke` packages on GHCR public (*github.com/bolli24 → Packages → luga →
+  Package settings → Change visibility*, same for fluke). Otherwise the VPS needs
+  `docker login ghcr.io` with a token that has `read:packages`.
 - Create a DNS record `run.henrikhuth.de` → `169.58.192.5` in Cloudflare. Start with
   **DNS only** (grey cloud) so Caddy can get its certificate directly; switch to **Proxied** with
   SSL/TLS mode **Full (strict)** once it works.
@@ -52,7 +52,7 @@ install -m 755 update-runner.sh /usr/local/sbin/update-playground-runner
 install -m 644 playground-runner.service playground-pull.service playground-pull.timer /etc/systemd/system/
 systemctl daemon-reload
 
-docker pull ghcr.io/bolli24/luga:playground
+systemctl start playground-pull   # pulls every language's image
 /usr/local/sbin/update-playground-runner   # downloads the binary and (re)starts the service
 systemctl enable playground-runner
 systemctl enable --now playground-pull.timer
