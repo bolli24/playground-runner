@@ -145,7 +145,7 @@ can only affect its own output, never the compile output.
 | Marker seen on stdout | Exit code | Meaning |
 |---|---|---|
 | no | `100` | compile error: the user's program is wrong; compile output explains why |
-| no | `101` | toolchain error: the adapter or toolchain is broken (missing linker, internal compiler error, unexpected tool output). **Triggers a notification.** |
+| no | `101` | toolchain error: the adapter or toolchain is broken (missing linker, internal compiler error, unexpected tool output). **Fails the contract test**, so the image isn't promoted. |
 | no | anything else | toolchain error, treated like `101` |
 | yes | any | the program's exit code (signals as `128 + n`) |
 
