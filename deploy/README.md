@@ -94,5 +94,6 @@ Docker publishes container ports past ufw, so check that every published port is
 - Logs: `journalctl -u playground-runner -f`
 - Update the runner after a push to main: `update-playground-runner`
 - Pull images now instead of waiting for the timer: `systemctl start playground-pull`
-- Check the deployed luga image against the contract:
-  `sudo -u playground-runner playground-runner --config /etc/playground-runner/runner.toml contract --lang luga`
+- Check the deployed luga image against the contract (`-g docker` because the service user only
+  gets the `docker` group through the unit's `SupplementaryGroups`):
+  `cd /tmp && sudo -u playground-runner -g docker playground-runner --config /etc/playground-runner/runner.toml contract --lang luga`
