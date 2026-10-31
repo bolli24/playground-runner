@@ -1,0 +1,63 @@
+# Reusable workflow: checks a language image against CONTRACT.md under gVisor.
+# Called by the language repos after building an image, see their playground workflows.
+
+name: Contract test
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image to check, e.g. ghcr.io/bolli24/luga:sha-0123456789ab
+        required: true
+        type: string
+      runner-ref:
+        description: Ref of the runner to test with
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: bolli24/playground-runner
+          ref: ${{ inputs.runner-ref }}
+
+      - name: Install gVisor
+        run: |
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
+            | sudo tee /etc/apt/sources.list.d/gvisor.list
+          sudo apt-get update
+          sudo apt-get install -y runsc
+          sudo runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}'
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build runner
+        run: cargo build --release --locked
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image
+        run: docker pull "${{ inputs.image }}"
+
+      - name: Contract test
+        run: |
+          cat > ci.toml <<'EOF'
+          runtime = "runsc"
+          languages = {}
+          EOF
+          ./target/release/playground-runner --config ci.toml contract --image "${{ inputs.image }}"
