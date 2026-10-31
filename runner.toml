@@ -1,4 +1,8 @@
 # Local development config. On the VPS, set `runtime = "runsc"` to run containers under gVisor.
 
+[server]
+# The website's dev server (`pnpm dev`)
+allowed_origins = ["http://localhost:4321"]
+
 [languages.luga]
 image = "luga-playground"

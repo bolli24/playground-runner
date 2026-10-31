@@ -17,7 +17,35 @@ pub struct Config {
     pub work_dir: Option<PathBuf>,
     #[serde(default)]
     pub limits: Limits,
+    #[serde(default)]
+    pub server: Server,
     pub languages: HashMap<String, Language>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Server {
+    pub listen: String,
+    /// Origins allowed to call the API from a browser, e.g. `https://henrikhuth.de`.
+    pub allowed_origins: Vec<String>,
+    /// Jobs running at the same time.
+    pub max_concurrent: usize,
+    /// Jobs waiting for a slot. Further requests get 429.
+    pub max_queued: usize,
+    /// How often to check whether a language's image changed, e.g. after a pull.
+    pub refresh_interval_secs: u64,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:3000".to_string(),
+            allowed_origins: Vec::new(),
+            max_concurrent: 2,
+            max_queued: 8,
+            refresh_interval_secs: 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

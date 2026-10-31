@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Limits;
 
@@ -15,7 +15,7 @@ pub struct Job {
     pub stdin: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFile {
     /// Source path as defined by the contract, e.g. `modules/vec.luga`.
     pub path: String,

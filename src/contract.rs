@@ -2,59 +2,21 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Stdio;
 use std::sync::Arc;
-use std::{fs, io};
 
-use serde::Deserialize;
-use tempfile::TempDir;
-use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::executor::{ExecError, Executor, Outcome, Phase, RunResult, container_name};
+use crate::executor::{ExecError, Executor, Outcome, Phase, RunResult};
 use crate::image::ImageInfo;
-use crate::job::{Job, SourceFile};
+use crate::job::Job;
+use crate::playground::{self, Expect, ExtractError};
 
 /// Fixtures every image must provide, see "Required fixtures" in CONTRACT.md.
 const REQUIRED_FIXTURES: &[&str] = &["hello", "compile_error", "exit_code", "infinite_loop"];
 /// Fixtures required by a capability.
 const CAPABILITY_FIXTURES: &[(&str, &str)] =
     &[("stdin", "stdin_echo"), ("multi-file", "multi_file")];
-
-#[derive(Debug, thiserror::Error)]
-pub enum ContractError {
-    #[error("{0}")]
-    Io(#[from] io::Error),
-    #[error("docker {0} failed: {1}")]
-    Docker(String, String),
-}
-
-#[derive(Debug, Deserialize)]
-struct Index {
-    #[serde(default)]
-    program: Vec<Program>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Program {
-    id: String,
-    files: Vec<String>,
-    entry: String,
-    #[serde(default)]
-    stdin: String,
-    #[serde(default)]
-    expect: Expect,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct Expect {
-    phase: Option<Phase>,
-    stdout: Option<String>,
-    exit_code: Option<i32>,
-    #[serde(default)]
-    timeout: bool,
-}
 
 /// A program from `fixtures.toml` or `examples.toml`, ready to run.
 struct Case {
@@ -94,12 +56,12 @@ pub async fn check(
     executor: Arc<Executor>,
     image: ImageInfo,
     parallel: usize,
-) -> Result<bool, ContractError> {
+) -> Result<bool, ExtractError> {
     println!(
         "{} image {} (revision {}, contract {})",
         image.language, image.id, image.revision, image.contract
     );
-    let dir = extract(&executor.config().docker, &image.id).await?;
+    let dir = playground::extract(&executor.config().docker, &image.id).await?;
     let mut report = Report::default();
 
     if !dir.path().join("linter/index.js").is_file() {
@@ -163,75 +125,27 @@ pub async fn check(
     Ok(report.failed == 0)
 }
 
-/// Copy `/playground` out of the image without running it.
-async fn extract(docker: &str, image_id: &str) -> Result<TempDir, ContractError> {
-    let dir = tempfile::Builder::new()
-        .prefix("playground-contract-")
-        .tempdir()?;
-    let name = container_name();
-    run_docker(docker, &["create", "--name", &name, image_id]).await?;
-    let target = dir.path().display().to_string();
-    let copied = run_docker(docker, &["cp", &format!("{name}:/playground/."), &target]).await;
-    let removed = run_docker(docker, &["rm", "--force", &name]).await;
-    copied.and(removed)?;
-    Ok(dir)
-}
-
-async fn run_docker(docker: &str, args: &[&str]) -> Result<(), ContractError> {
-    let output = Command::new(docker)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .await?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(ContractError::Docker(
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
-    }
-}
-
 /// Load the programs listed in `<set>/<set>.toml`. Problems with single programs are returned
 /// as `(name, reason)` so the other programs still run.
 fn load(root: &Path, set: &str, language: &str) -> Vec<Result<Case, (String, String)>> {
-    let dir = root.join(set);
-    let index_path = dir.join(format!("{set}.toml"));
-    let index: Index = match fs::read_to_string(&index_path)
-        .map_err(|err| err.to_string())
-        .and_then(|text| toml::from_str(&text).map_err(|err| err.to_string()))
-    {
-        Ok(index) => index,
+    let programs = match playground::load_index(root, set) {
+        Ok(programs) => programs,
         Err(err) => return vec![Err((format!("{set}/{set}.toml"), err))],
     };
 
     let mut ids = HashSet::new();
-    index
-        .program
+    programs
         .into_iter()
         .map(|program| {
             let name = format!("{set}/{}", program.id);
-            let valid_id = !program.id.is_empty()
-                && program.id.chars().all(|c| {
-                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-')
-                });
-            if !valid_id {
+            if !playground::is_valid_id(&program.id) {
                 return Err((name, "id must match [a-z0-9_-]+".to_string()));
             }
             if !ids.insert(program.id.clone()) {
                 return Err((name, "duplicate id".to_string()));
             }
-
-            let mut files = Vec::new();
-            for path in &program.files {
-                let content = fs::read_to_string(dir.join(path))
-                    .map_err(|err| (name.clone(), format!("unable to read {path}: {err}")))?;
-                files.push(SourceFile {
-                    path: path.clone(),
-                    content,
-                });
-            }
+            let files = playground::read_files(root, set, &program)
+                .map_err(|reason| (name.clone(), reason))?;
 
             Ok(Case {
                 job: Job {
@@ -365,9 +279,11 @@ mod tests {
     }
 
     fn expect(toml: &str) -> Expect {
-        toml::from_str::<Program>(&format!("id = \"x\"\nfiles = []\nentry = \"x\"\n{toml}"))
-            .unwrap()
-            .expect
+        toml::from_str::<playground::Program>(&format!(
+            "id = \"x\"\nfiles = []\nentry = \"x\"\n{toml}"
+        ))
+        .unwrap()
+        .expect
     }
 
     #[test]

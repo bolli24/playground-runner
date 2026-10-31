@@ -3,18 +3,23 @@ mod contract;
 mod executor;
 mod image;
 mod job;
+mod playground;
+mod registry;
+mod server;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{fs, io};
 
-use axum::{Router, routing::get};
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
 use crate::executor::{ExecError, Executor};
 use crate::job::{Job, SourceFile};
+use crate::registry::Registry;
+use crate::server::AppState;
 
 #[derive(Parser)]
 struct Cli {
@@ -28,8 +33,9 @@ struct Cli {
 enum Command {
     /// Start the HTTP server.
     Serve {
-        #[arg(long, default_value = "0.0.0.0:3000")]
-        listen: String,
+        /// Address to listen on [default: `server.listen` from the config]
+        #[arg(long)]
+        listen: Option<String>,
     },
     /// Compile and run the program in DIR and print the result as JSON.
     Exec {
@@ -69,7 +75,7 @@ async fn main() -> ExitCode {
     };
 
     match cli.command {
-        Command::Serve { listen } => serve(&listen).await,
+        Command::Serve { listen } => serve(config, listen).await,
         Command::Exec {
             lang,
             entry,
@@ -116,16 +122,29 @@ async fn contract(
     }
 }
 
-async fn serve(listen: &str) -> ExitCode {
-    let app = Router::new().route("/", get(hello));
-    let listener = match tokio::net::TcpListener::bind(listen).await {
+async fn serve(config: Config, listen: Option<String>) -> ExitCode {
+    let listen = listen.unwrap_or_else(|| config.server.listen.clone());
+    let refresh_interval = Duration::from_secs(config.server.refresh_interval_secs);
+
+    let registry = Arc::new(Registry::new(&config));
+    registry.refresh_all().await;
+    registry.clone().spawn_refresh(refresh_interval);
+
+    let executor = Arc::new(Executor::new(config));
+    let app = server::router(Arc::new(AppState::new(executor, registry)));
+
+    let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(listener) => listener,
         Err(err) => {
             eprintln!("error: unable to listen on {listen}: {err}");
             return ExitCode::FAILURE;
         }
     };
-    match axum::serve(listener, app).await {
+    eprintln!("listening on {listen}");
+    match axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
@@ -134,8 +153,27 @@ async fn serve(listen: &str) -> ExitCode {
     }
 }
 
-async fn hello() -> &'static str {
-    "Hello, world!"
+/// Ctrl+C, or SIGTERM from systemd or docker.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
 }
 
 async fn exec(
