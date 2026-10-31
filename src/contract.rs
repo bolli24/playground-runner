@@ -30,7 +30,6 @@ struct Case {
 struct Report {
     passed: usize,
     failed: usize,
-    warnings: usize,
 }
 
 impl Report {
@@ -42,11 +41,6 @@ impl Report {
     fn fail(&mut self, name: &str, reason: &str) {
         println!("FAIL  {name}  {}", indent(reason));
         self.failed += 1;
-    }
-
-    fn warn(&mut self, message: &str) {
-        println!("WARN  {message}");
-        self.warnings += 1;
     }
 }
 
@@ -64,8 +58,9 @@ pub async fn check(
     let dir = playground::extract(&executor.config().docker, &image.id).await?;
     let mut report = Report::default();
 
+    // The linter only runs in the browser, so only check that it's there
     if !dir.path().join("linter/index.js").is_file() {
-        report.warn("linter/index.js is missing");
+        report.fail("linter/index.js", "missing");
     }
 
     let mut cases = Vec::new();
@@ -118,10 +113,7 @@ pub async fn check(
         }
     }
 
-    println!(
-        "\n{} passed, {} failed, {} warnings",
-        report.passed, report.failed, report.warnings
-    );
+    println!("\n{} passed, {} failed", report.passed, report.failed);
     Ok(report.failed == 0)
 }
 

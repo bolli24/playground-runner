@@ -288,8 +288,10 @@ Not part of the contract; things the current images need to get right.
   examples use `test/modules/`.
 - `/// EXIT_CODE=n` and `/// SKIP_TEST` directives in `test/` could generate `examples.toml`
   instead of maintaining it by hand.
-- The linter is `crates/luga_wasm`, built with `wasm-pack --target web`. Its `check` returns
-  `path` where the contract says `file`, which `index.js` maps.
+- The linter is `crates/luga_wasm`, built for `wasm32-unknown-unknown` and bound with
+  `wasm-bindgen --target web --remove-name-section` (the name section is over 90% of the module).
+  `playground/linter/index.js` maps its `path` to the contract's `file` and turns errors into a
+  diagnostic, since `check` must not throw.
 
 ### fluke
 
