@@ -19,15 +19,23 @@ jobs:
   release:
     # Same Ubuntu release as the VPS, so the binary links against a compatible glibc
     runs-on: ubuntu-24.04
+    # Limits per step, so a hang fails quickly; this covers the rest, like rust-cache saving
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
+        timeout-minutes: 2
       - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
 
       - run: cargo test --locked
+        timeout-minutes: 15
       - run: cargo build --release --locked
+        timeout-minutes: 15
 
       - name: Publish to the "latest" release
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

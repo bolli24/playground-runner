@@ -22,39 +22,53 @@ permissions:
 jobs:
   contract:
     runs-on: ubuntu-24.04
+    # Every step has its own limit, so a hung download fails within minutes instead of after
+    # GitHub's default of 6 hours. This covers what they don't, like rust-cache saving at the end.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
+        timeout-minutes: 2
         with:
           repository: bolli24/playground-runner
           ref: ${{ inputs.runner-ref }}
 
+      # The release tarball from gVisor's bucket rather than its apt repository: apt-get update
+      # also refreshes the Ubuntu mirrors, which can hang for many minutes when one is down. The
+      # tarball has the apt package's layout: runsc with the gvisor-bin/ helpers next to it.
       - name: Install gVisor
+        timeout-minutes: 5
         run: |
-          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
-            | sudo tee /etc/apt/sources.list.d/gvisor.list
-          sudo apt-get update
-          sudo apt-get install -y runsc
+          url=https://storage.googleapis.com/gvisor/releases/release/latest/x86_64
+          curl -fsSL --retry 3 -O "$url/gvisor.tar.bz2" -O "$url/gvisor.tar.bz2.sha512"
+          sha512sum -c gvisor.tar.bz2.sha512
+          sudo tar -xjf gvisor.tar.bz2 -C /usr/local/bin
+          rm gvisor.tar.bz2 gvisor.tar.bz2.sha512
           sudo runsc install
           sudo systemctl restart docker
           docker info --format '{{json .Runtimes}}'
 
       - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
 
       - name: Build runner
+        timeout-minutes: 15
         run: cargo build --release --locked
 
       - uses: docker/login-action@v3
+        timeout-minutes: 2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull image
+        timeout-minutes: 10
         run: docker pull "${{ inputs.image }}"
 
       - name: Contract test
+        timeout-minutes: 10
         run: |
           cat > ci.toml <<'EOF'
           runtime = "runsc"
