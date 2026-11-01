@@ -87,6 +87,7 @@ struct LanguageInfo {
     extensions: Vec<String>,
     capabilities: Vec<String>,
     views: Vec<String>,
+    options: Vec<String>,
     /// URL of the linter module, relative to the API's origin.
     linter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,6 +104,7 @@ impl LanguageInfo {
             extensions: image.extensions.clone(),
             capabilities: image.capabilities.clone(),
             views: image.views.clone(),
+            options: image.options.clone(),
             linter: snapshot.has_linter.then(|| {
                 format!(
                     "/v1/assets/{}/{}/linter/index.js",

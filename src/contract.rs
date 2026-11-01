@@ -91,23 +91,36 @@ pub async fn check(
         }
     }
 
-    // An image with views must print each of them, and stop after compiling when asked to. A
-    // missing hello fixture is already reported above.
-    if !image.views.is_empty()
-        && let Some(hello) = cases.iter().find(|case| case.name == "fixtures/hello")
-    {
-        cases.push(Case {
-            name: "views/hello".to_string(),
-            job: Job {
-                views: image.views.clone(),
-                run: false,
-                ..hello.job.clone()
-            },
-            expect: Expect {
-                views: image.views.clone(),
-                ..Expect::default()
-            },
-        });
+    // An image with views must print each of them, and stop after compiling when asked to. Each
+    // build option must still compile and run hello correctly. A missing hello fixture is already
+    // reported above.
+    if let Some(hello) = cases.iter().find(|case| case.name == "fixtures/hello") {
+        let mut extra = Vec::new();
+        if !image.views.is_empty() {
+            extra.push(Case {
+                name: "views/hello".to_string(),
+                job: Job {
+                    views: image.views.clone(),
+                    run: false,
+                    ..hello.job.clone()
+                },
+                expect: Expect {
+                    views: image.views.clone(),
+                    ..Expect::default()
+                },
+            });
+        }
+        for option in &image.options {
+            extra.push(Case {
+                name: format!("options/{option}/hello"),
+                job: Job {
+                    options: vec![option.clone()],
+                    ..hello.job.clone()
+                },
+                expect: hello.expect.clone(),
+            });
+        }
+        cases.extend(extra);
     }
 
     let image = Arc::new(image);
@@ -165,6 +178,7 @@ fn load(root: &Path, set: &str, language: &str) -> Vec<Result<Case, (String, Str
                     entry: program.entry,
                     stdin: program.stdin,
                     views: program.expect.views.clone(),
+                    options: Vec::new(),
                     run: true,
                 },
                 expect: program.expect,

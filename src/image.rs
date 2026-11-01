@@ -20,6 +20,9 @@ pub struct ImageInfo {
     /// Intermediate representations the adapter can print, e.g. `mir`. Empty if the image
     /// doesn't declare `playground.views`.
     pub views: Vec<String>,
+    /// Build options a job can turn on, e.g. `release`. Empty if the image doesn't declare
+    /// `playground.options`.
+    pub options: Vec<String>,
     pub revision: String,
 }
 
@@ -105,15 +108,15 @@ fn parse_labels(
     }
 
     // Optional, added after contract 1 was released
-    let views_label = labels.get("playground.views").map_or("", String::as_str);
-    let views = list(views_label);
-    if !views.iter().all(|view| is_valid_view(view)) {
-        return Err(ImageError::InvalidLabel(
-            image.into(),
-            "playground.views",
-            views_label.into(),
-        ));
-    }
+    let names = |name: &'static str| {
+        let value = labels.get(name).map_or("", String::as_str);
+        let names = list(value);
+        if names.iter().all(|item| is_valid_name(item)) {
+            Ok(names)
+        } else {
+            Err(ImageError::InvalidLabel(image.into(), name, value.into()))
+        }
+    };
 
     Ok(ImageInfo {
         id,
@@ -121,15 +124,17 @@ fn parse_labels(
         language: label("playground.language")?.into(),
         extensions,
         capabilities: list(label("playground.capabilities")?),
-        views,
+        views: names("playground.views")?,
+        options: names("playground.options")?,
         revision: label("org.opencontainers.image.revision")?.into(),
     })
 }
 
-/// View names appear in view headers, so they are restricted to `[a-z0-9-]+`.
-fn is_valid_view(view: &str) -> bool {
-    !view.is_empty()
-        && view
+/// View and option names are passed to the adapter in comma-separated variables, and views appear
+/// in view headers, so both are restricted to `[a-z0-9-]+`.
+fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
@@ -161,20 +166,30 @@ mod tests {
         assert_eq!(info.extensions, vec![".luga"]);
         assert!(info.capabilities.is_empty());
         assert!(info.views.is_empty());
+        assert!(info.options.is_empty());
         assert_eq!(info.revision, "abc");
     }
 
     #[test]
-    fn parses_views() {
+    fn parses_views_and_options() {
         let mut labels = luga_labels();
         labels.insert("playground.views".into(), "mir, clif,asm".into());
+        labels.insert("playground.options".into(), "release".into());
         let info = parse_labels("img", "id".into(), labels.clone()).unwrap();
         assert_eq!(info.views, vec!["mir", "clif", "asm"]);
+        assert_eq!(info.options, vec!["release"]);
 
         labels.insert("playground.views".into(), "mir,Bad View".into());
         assert!(matches!(
-            parse_labels("img", "id".into(), labels),
+            parse_labels("img", "id".into(), labels.clone()),
             Err(ImageError::InvalidLabel(_, "playground.views", _))
+        ));
+
+        labels.insert("playground.views".into(), "mir".into());
+        labels.insert("playground.options".into(), "opt=3".into());
+        assert!(matches!(
+            parse_labels("img", "id".into(), labels),
+            Err(ImageError::InvalidLabel(_, "playground.options", _))
         ));
     }
 

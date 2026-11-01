@@ -50,6 +50,9 @@ enum Command {
         /// Views to print while compiling, comma-separated, e.g. `hir,mir`.
         #[arg(long, value_delimiter = ',')]
         views: Vec<String>,
+        /// Build options to turn on, comma-separated, e.g. `release`.
+        #[arg(long, value_delimiter = ',')]
+        options: Vec<String>,
         /// Only compile the program.
         #[arg(long)]
         no_run: bool,
@@ -87,12 +90,14 @@ async fn main() -> ExitCode {
             entry,
             stdin,
             views,
+            options,
             no_run,
             dir,
         } => {
             let job = match read_job(lang, entry, stdin.as_deref(), &dir) {
                 Ok(job) => Job {
                     views,
+                    options,
                     run: !no_run,
                     ..job
                 },
@@ -225,6 +230,7 @@ fn read_job(language: String, entry: String, stdin: Option<&Path>, dir: &Path) -
         entry,
         stdin,
         views: Vec::new(),
+        options: Vec::new(),
         run: true,
     })
 }

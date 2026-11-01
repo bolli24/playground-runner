@@ -24,6 +24,7 @@ Images declare themselves through OCI labels:
 | `playground.extensions` | `.luga` | yes, comma-separated list of source file extensions |
 | `playground.capabilities` | `multi-file` | yes, may be empty (see [Capabilities](#capabilities)) |
 | `playground.views` | `hir,mir,cil` | no, comma-separated names matching `[a-z0-9-]+` (see [Views](#views)) |
+| `playground.options` | `release` | no, comma-separated names matching `[a-z0-9-]+` (see [Build options](#build-options)) |
 | `org.opencontainers.image.revision` | full commit SHA | yes |
 | `org.opencontainers.image.source` | `https://github.com/bolli24/luga` | yes |
 
@@ -86,6 +87,7 @@ Environment variables:
 | `PLAYGROUND_ENTRY` | entry file's source path, relative to `/work/src` (e.g. `main.luga`) |
 | `PLAYGROUND_VIEWS` | comma-separated [views](#views) to print, e.g. `hir,mir`; empty if none |
 | `PLAYGROUND_RUN` | `1` to run the program after compiling it, `0` to only compile it |
+| `PLAYGROUND_OPTIONS` | comma-separated [build options](#build-options) to turn on, e.g. `release`; empty if none |
 | `HOME`, `TMPDIR` | `/tmp` |
 | `NO_COLOR` | `1` |
 | `TERM` | `dumb` |
@@ -204,6 +206,17 @@ for view in $(echo "$PLAYGROUND_VIEWS" | tr ',' ' '); do
 done
 ```
 
+## Build options
+
+Build options are switches that change how the program is compiled, e.g. `release` for an
+optimized build. An image lists the ones it supports in the optional `playground.options` label;
+the names are up to the language. `PLAYGROUND_OPTIONS` holds the ones a job turned on, always a
+subset of the label. An option applies to the whole job: the views show the code built with it,
+and the program that runs is that code.
+
+Adapters ignore `PLAYGROUND_OPTIONS` if they don't support it, so images without options keep
+working.
+
 ## Examples and fixtures
 
 `examples/examples.toml` lists the programs shown in the playground's file explorer.
@@ -249,7 +262,8 @@ Every image must provide these fixture `id`s:
 
 For an image with `playground.views`, the contract test also compiles `hello` with
 `PLAYGROUND_RUN=0` and every declared view. It must exit with `0` without the marker and print each
-view, non-empty.
+view, non-empty. For each option in `playground.options`, it runs `hello` with that option alone,
+with the same expectation as the fixture.
 
 ## Capabilities
 

@@ -18,6 +18,9 @@ pub struct Job {
     /// `playground.views`.
     #[serde(default)]
     pub views: Vec<String>,
+    /// Build options to turn on, from the image's `playground.options`.
+    #[serde(default)]
+    pub options: Vec<String>,
     /// Whether to run the program after compiling it.
     #[serde(default = "default_run")]
     pub run: bool,
@@ -54,6 +57,8 @@ pub enum JobError {
     SourcesTooLarge(usize, usize),
     #[error("stdin is too large ({0} bytes, at most {1})")]
     StdinTooLarge(usize, usize),
+    #[error("unknown option '{0}', available: {1}")]
+    UnknownOption(String, String),
     #[error("unknown view '{0}', available: {1}")]
     UnknownView(String, String),
 }
@@ -137,16 +142,30 @@ impl Job {
             ));
         }
 
-        if let Some(view) = self.views.iter().find(|view| !image.views.contains(view)) {
-            let available = if image.views.is_empty() {
-                "none".to_string()
-            } else {
-                image.views.join(", ")
-            };
-            return Err(JobError::UnknownView(view.clone(), available));
+        if let Some(view) = unknown(&self.views, &image.views) {
+            return Err(JobError::UnknownView(view.clone(), available(&image.views)));
+        }
+        if let Some(option) = unknown(&self.options, &image.options) {
+            return Err(JobError::UnknownOption(
+                option.clone(),
+                available(&image.options),
+            ));
         }
 
         Ok(())
+    }
+}
+
+/// The first of `requested` that isn't one of `declared`.
+fn unknown<'a>(requested: &'a [String], declared: &[String]) -> Option<&'a String> {
+    requested.iter().find(|name| !declared.contains(name))
+}
+
+fn available(declared: &[String]) -> String {
+    if declared.is_empty() {
+        "none".to_string()
+    } else {
+        declared.join(", ")
     }
 }
 
@@ -167,6 +186,7 @@ mod tests {
             entry: entry.into(),
             stdin: String::new(),
             views: Vec::new(),
+            options: Vec::new(),
             run: true,
         }
     }
@@ -179,6 +199,7 @@ mod tests {
             extensions: vec![".luga".into()],
             capabilities: Vec::new(),
             views: vec!["mir".into(), "asm".into()],
+            options: vec!["release".into()],
             revision: "abc".into(),
         };
         job.validate(&image, &Limits::default())
@@ -257,6 +278,18 @@ mod tests {
         assert_eq!(
             validate(&job),
             Err(JobError::UnknownView("hir".into(), "mir, asm".into()))
+        );
+    }
+
+    #[test]
+    fn checks_options_against_image() {
+        let mut job = job(&["main.luga"], "main.luga");
+        job.options = vec!["release".into()];
+        assert_eq!(validate(&job), Ok(()));
+        job.options = vec!["fast".into()];
+        assert_eq!(
+            validate(&job),
+            Err(JobError::UnknownOption("fast".into(), "release".into()))
         );
     }
 }

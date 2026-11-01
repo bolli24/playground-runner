@@ -213,6 +213,7 @@ impl Executor {
             format!("--volume={}:/work/stdin:ro", dir.join("stdin").display()),
             format!("--env=PLAYGROUND_ENTRY={}", job.entry),
             format!("--env=PLAYGROUND_VIEWS={}", job.views.join(",")),
+            format!("--env=PLAYGROUND_OPTIONS={}", job.options.join(",")),
             format!("--env=PLAYGROUND_RUN={}", u8::from(job.run)),
             "--env=HOME=/tmp".to_string(),
             "--env=TMPDIR=/tmp".to_string(),
