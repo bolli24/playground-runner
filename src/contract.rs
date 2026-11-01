@@ -91,6 +91,25 @@ pub async fn check(
         }
     }
 
+    // An image with views must print each of them, and stop after compiling when asked to. A
+    // missing hello fixture is already reported above.
+    if !image.views.is_empty()
+        && let Some(hello) = cases.iter().find(|case| case.name == "fixtures/hello")
+    {
+        cases.push(Case {
+            name: "views/hello".to_string(),
+            job: Job {
+                views: image.views.clone(),
+                run: false,
+                ..hello.job.clone()
+            },
+            expect: Expect {
+                views: image.views.clone(),
+                ..Expect::default()
+            },
+        });
+    }
+
     let image = Arc::new(image);
     let permits = Arc::new(Semaphore::new(parallel.max(1)));
     let mut tasks = JoinSet::new();
@@ -102,7 +121,7 @@ pub async fn check(
                 .await
                 .expect("semaphore is never closed");
             let result = executor.run_on(&image, &case.job).await;
-            (case.name, evaluate(&case.expect, result))
+            (case.name, evaluate(&case.expect, case.job.run, result))
         });
     }
     while let Some(task) = tasks.join_next().await {
@@ -145,6 +164,8 @@ fn load(root: &Path, set: &str, language: &str) -> Vec<Result<Case, (String, Str
                     files,
                     entry: program.entry,
                     stdin: program.stdin,
+                    views: program.expect.views.clone(),
+                    run: true,
                 },
                 expect: program.expect,
                 name,
@@ -153,14 +174,39 @@ fn load(root: &Path, set: &str, language: &str) -> Vec<Result<Case, (String, Str
         .collect()
 }
 
-/// Compare a run with the expectation. Returns the total duration on success.
-fn evaluate(expect: &Expect, result: Result<RunResult, ExecError>) -> Result<u64, String> {
+/// Compare a job's result with the expectation. `run` is whether the job asked to run the
+/// program. Returns the total duration on success.
+fn evaluate(
+    expect: &Expect,
+    run: bool,
+    result: Result<RunResult, ExecError>,
+) -> Result<u64, String> {
     let result = result.map_err(|err| err.to_string())?;
+    if run {
+        check_outcome(expect, &result)?;
+    } else if result.outcome != Outcome::Compiled {
+        return Err(format!(
+            "expected the program to only compile, got {}",
+            describe(&result)
+        ));
+    }
+
+    for view in &expect.views {
+        match result.views.get(view) {
+            Some(printed) if !printed.content.trim().is_empty() => {}
+            Some(_) => return Err(format!("view {view} is empty")),
+            None => return Err(format!("view {view} is missing")),
+        }
+    }
+    Ok(duration_ms(&result))
+}
+
+fn check_outcome(expect: &Expect, result: &RunResult) -> Result<(), String> {
     let phase = expect.phase.unwrap_or(Phase::Run);
 
     if expect.timeout {
         if result.outcome != Outcome::TimedOut {
-            return Err(format!("expected a timeout, got {}", describe(&result)));
+            return Err(format!("expected a timeout, got {}", describe(result)));
         }
         if result.phase != phase {
             return Err(format!(
@@ -169,7 +215,7 @@ fn evaluate(expect: &Expect, result: Result<RunResult, ExecError>) -> Result<u64
                 phase_name(phase)
             ));
         }
-        return Ok(duration_ms(&result));
+        return Ok(());
     }
 
     match (phase, result.outcome) {
@@ -179,7 +225,7 @@ fn evaluate(expect: &Expect, result: Result<RunResult, ExecError>) -> Result<u64
             if result.exit_code != Some(expected) {
                 return Err(format!(
                     "expected exit code {expected}, got {}",
-                    describe(&result)
+                    describe(result)
                 ));
             }
             let actual = result.run.as_ref().map_or("", |run| run.stdout.as_str());
@@ -194,23 +240,24 @@ fn evaluate(expect: &Expect, result: Result<RunResult, ExecError>) -> Result<u64
         (Phase::Compile, _) => {
             return Err(format!(
                 "expected a compile error, got {}",
-                describe(&result)
+                describe(result)
             ));
         }
         (Phase::Run, _) => {
             return Err(format!(
                 "expected the program to run, got {}",
-                describe(&result)
+                describe(result)
             ));
         }
     }
-    Ok(duration_ms(&result))
+    Ok(())
 }
 
 /// One line about the outcome, followed by the compile output when it explains a failure.
 fn describe(result: &RunResult) -> String {
     let mut text = match result.outcome {
         Outcome::Exited => format!("exit code {}", result.exit_code.unwrap_or_default()),
+        Outcome::Compiled => "a successful compile without running".to_string(),
         Outcome::CompileError => "a compile error".to_string(),
         Outcome::ToolchainError => format!(
             "a toolchain error (exit code {})",
@@ -251,8 +298,10 @@ fn indent(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use crate::executor::Output;
+    use crate::executor::{Output, View};
 
     fn result(outcome: Outcome, phase: Phase, exit_code: Option<i32>, stdout: &str) -> RunResult {
         let output = |stdout: &str| Output {
@@ -266,6 +315,7 @@ mod tests {
             exit_code,
             compile: output(""),
             run: (phase == Phase::Run).then(|| output(stdout)),
+            views: BTreeMap::new(),
             revision: "test".into(),
         }
     }
@@ -284,6 +334,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::Exited, Phase::Run, Some(0), ""))
             )
             .is_ok()
@@ -291,6 +342,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::Exited, Phase::Run, Some(1), ""))
             )
             .is_err()
@@ -298,6 +350,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::CompileError, Phase::Compile, Some(100), ""))
             )
             .is_err()
@@ -310,6 +363,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::Exited, Phase::Run, Some(3), "hi\n"))
             )
             .is_ok()
@@ -317,6 +371,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::Exited, Phase::Run, Some(3), "hi"))
             )
             .is_err()
@@ -324,6 +379,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::Exited, Phase::Run, Some(0), "hi\n"))
             )
             .is_err()
@@ -336,6 +392,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::CompileError, Phase::Compile, Some(100), ""))
             )
             .is_ok()
@@ -343,6 +400,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(
                     Outcome::ToolchainError,
                     Phase::Compile,
@@ -355,12 +413,45 @@ mod tests {
     }
 
     #[test]
+    fn compile_only_checks_outcome_and_views() {
+        let expect = expect("expect.views = [\"hir\", \"mir\"]");
+        let mut compiled = result(Outcome::Compiled, Phase::Compile, Some(0), "");
+        let view = |content: &str| View {
+            content: content.into(),
+            truncated: false,
+        };
+        compiled.views.insert("hir".into(), view("fn main\n"));
+        compiled.views.insert("mir".into(), view("bb0\n"));
+        assert!(evaluate(&expect, false, Ok(compiled)).is_ok());
+
+        let mut empty_view = result(Outcome::Compiled, Phase::Compile, Some(0), "");
+        empty_view.views.insert("hir".into(), view("fn main\n"));
+        empty_view.views.insert("mir".into(), view("\n"));
+        assert!(evaluate(&expect, false, Ok(empty_view)).is_err());
+
+        let missing_view = result(Outcome::Compiled, Phase::Compile, Some(0), "");
+        assert!(evaluate(&expect, false, Ok(missing_view)).is_err());
+
+        // The program must not run
+        let ran = result(Outcome::Exited, Phase::Run, Some(0), "");
+        assert!(evaluate(&Expect::default(), false, Ok(ran)).is_err());
+    }
+
+    #[test]
     fn timeout_checks_phase() {
         let expect = expect("expect.timeout = true");
-        assert!(evaluate(&expect, Ok(result(Outcome::TimedOut, Phase::Run, None, ""))).is_ok());
         assert!(
             evaluate(
                 &expect,
+                true,
+                Ok(result(Outcome::TimedOut, Phase::Run, None, ""))
+            )
+            .is_ok()
+        );
+        assert!(
+            evaluate(
+                &expect,
+                true,
                 Ok(result(Outcome::TimedOut, Phase::Compile, None, ""))
             )
             .is_err()
@@ -368,6 +459,7 @@ mod tests {
         assert!(
             evaluate(
                 &expect,
+                true,
                 Ok(result(Outcome::Exited, Phase::Run, Some(0), ""))
             )
             .is_err()

@@ -23,6 +23,7 @@ Images declare themselves through OCI labels:
 | `playground.language` | `luga` | yes |
 | `playground.extensions` | `.luga` | yes, comma-separated list of source file extensions |
 | `playground.capabilities` | `multi-file` | yes, may be empty (see [Capabilities](#capabilities)) |
+| `playground.views` | `hir,mir,cil` | no, comma-separated names matching `[a-z0-9-]+` (see [Views](#views)) |
 | `org.opencontainers.image.revision` | full commit SHA | yes |
 | `org.opencontainers.image.source` | `https://github.com/bolli24/luga` | yes |
 
@@ -83,6 +84,8 @@ Environment variables:
 | Variable | Value |
 |---|---|
 | `PLAYGROUND_ENTRY` | entry file's source path, relative to `/work/src` (e.g. `main.luga`) |
+| `PLAYGROUND_VIEWS` | comma-separated [views](#views) to print, e.g. `hir,mir`; empty if none |
+| `PLAYGROUND_RUN` | `1` to run the program after compiling it, `0` to only compile it |
 | `HOME`, `TMPDIR` | `/tmp` |
 | `NO_COLOR` | `1` |
 | `TERM` | `dumb` |
@@ -110,7 +113,8 @@ Further guarantees and restrictions:
    imports). Compiler output (diagnostics, progress messages) goes to the container's stdout and
    stderr.
 2. **Phase marker.** When compiling succeeded, write the marker line to **both** stdout and
-   stderr, exactly once each, and flush:
+   stderr, exactly once each, and flush. With `PLAYGROUND_RUN=0`, exit with `0` instead, without
+   the marker.
 
    ```
    \x1ePLAYGROUND-RUN\x1e\n
@@ -147,6 +151,7 @@ can only affect its own output, never the compile output.
 
 | Marker seen on stdout | Exit code | Meaning |
 |---|---|---|
+| no | `0`, with `PLAYGROUND_RUN=0` | compiled; the program wasn't run |
 | no | `100` | compile error: the user's program is wrong; compile output explains why |
 | no | `101` | toolchain error: the adapter or toolchain is broken (missing linker, internal compiler error, unexpected tool output). **Fails the contract test**, so the image isn't promoted. |
 | no | anything else | toolchain error, treated like `101` |
@@ -158,6 +163,46 @@ playground traffic, a `101` means the image needs fixing.
 
 Timeouts and out-of-memory kills are detected by the runner, not reported by the adapter. The
 runner reports which phase was active when it killed the container (marker seen or not).
+
+## Views
+
+Views are intermediate representations the compiler can show next to the program, e.g. a
+language's MIR or the assembly it generates. An image lists the views it supports in the
+optional `playground.views` label; the names are up to the language. `PLAYGROUND_VIEWS` holds the
+ones a job requested, always a subset of the label.
+
+The adapter prints each requested view to stdout during the compile phase, after the compiler's
+own output and before the phase marker. A view starts with a header line and ends at the next
+header or at the end of the compile output:
+
+```
+\x1ePLAYGROUND-VIEW <name>\x1e\n
+<the view's text>
+```
+
+- The view's text must not contain `\x1e`. The text can include strings from the user's program,
+  so the adapter removes the character, e.g. with `tr -d '\036'`. Otherwise a program could fake a
+  header or the phase marker.
+- A view the compiler couldn't produce, e.g. because type checking failed before the MIR was
+  built, is left out. Views are printed on compile errors too, as far as the compiler got.
+- The runner keeps at most 256 KiB of each view and marks longer ones as truncated. Compile output
+  including views has its own size limit, separate from the program's output; exceeding it kills
+  the container like any other output limit. An adapter can cut each view after 256 KiB + 1 byte,
+  e.g. with `head -c 262145`, so large programs don't hit that limit.
+- Views a job didn't request are ignored.
+
+Adapters ignore `PLAYGROUND_VIEWS` and `PLAYGROUND_RUN` if they don't support them, so images
+without views keep working: they never get views requested, and a compile-only job just runs.
+
+Example shape, continuing the one above (not normative):
+
+```sh
+for view in $(echo "$PLAYGROUND_VIEWS" | tr ',' ' '); do
+    [ -f "/tmp/views/$view.txt" ] || continue
+    printf '\036PLAYGROUND-VIEW %s\036\n' "$view"
+    tr -d '\036' < "/tmp/views/$view.txt" | head -c 262145
+done
+```
 
 ## Examples and fixtures
 
@@ -176,6 +221,7 @@ expect.phase = "run"               # optional, "compile" (expect exit 100) or "r
 expect.stdout = "Hello, world!\n"  # optional, exact match of program stdout
 expect.exit_code = 0               # optional, default 0 for phase "run"
 expect.timeout = false             # optional, true if the runner must kill it for timing out
+expect.views = ["mir"]             # optional, views to request; each must be printed and non-empty
 ```
 
 With `expect.timeout = true`, `expect.phase` is the phase the timeout must happen in, and
@@ -200,6 +246,10 @@ Every image must provide these fixture `id`s:
 | `infinite_loop` | never terminates | `expect.timeout = true`, phase `run` |
 | `stdin_echo` | reads stdin, prints it back | only if capability `stdin` |
 | `multi_file` | entry imports a file in a subfolder | only if capability `multi-file` |
+
+For an image with `playground.views`, the contract test also compiles `hello` with
+`PLAYGROUND_RUN=0` and every declared view. It must exit with `0` without the marker and print each
+view, non-empty.
 
 ## Capabilities
 

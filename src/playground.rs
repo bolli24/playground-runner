@@ -46,6 +46,9 @@ pub struct Expect {
     pub exit_code: Option<i32>,
     #[serde(default)]
     pub timeout: bool,
+    /// Views to request, each of which must be printed and not be empty.
+    #[serde(default)]
+    pub views: Vec<String>,
 }
 
 /// Copy `/playground` out of the image without running it.

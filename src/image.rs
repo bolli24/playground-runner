@@ -17,6 +17,9 @@ pub struct ImageInfo {
     pub language: String,
     pub extensions: Vec<String>,
     pub capabilities: Vec<String>,
+    /// Intermediate representations the adapter can print, e.g. `mir`. Empty if the image
+    /// doesn't declare `playground.views`.
+    pub views: Vec<String>,
     pub revision: String,
 }
 
@@ -101,14 +104,34 @@ fn parse_labels(
         ));
     }
 
+    // Optional, added after contract 1 was released
+    let views_label = labels.get("playground.views").map_or("", String::as_str);
+    let views = list(views_label);
+    if !views.iter().all(|view| is_valid_view(view)) {
+        return Err(ImageError::InvalidLabel(
+            image.into(),
+            "playground.views",
+            views_label.into(),
+        ));
+    }
+
     Ok(ImageInfo {
         id,
         contract,
         language: label("playground.language")?.into(),
         extensions,
         capabilities: list(label("playground.capabilities")?),
+        views,
         revision: label("org.opencontainers.image.revision")?.into(),
     })
+}
+
+/// View names appear in view headers, so they are restricted to `[a-z0-9-]+`.
+fn is_valid_view(view: &str) -> bool {
+    !view.is_empty()
+        && view
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 #[cfg(test)]
@@ -137,7 +160,22 @@ mod tests {
         let info = parse_labels("img", "sha256:1".into(), luga_labels()).unwrap();
         assert_eq!(info.extensions, vec![".luga"]);
         assert!(info.capabilities.is_empty());
+        assert!(info.views.is_empty());
         assert_eq!(info.revision, "abc");
+    }
+
+    #[test]
+    fn parses_views() {
+        let mut labels = luga_labels();
+        labels.insert("playground.views".into(), "mir, clif,asm".into());
+        let info = parse_labels("img", "id".into(), labels.clone()).unwrap();
+        assert_eq!(info.views, vec!["mir", "clif", "asm"]);
+
+        labels.insert("playground.views".into(), "mir,Bad View".into());
+        assert!(matches!(
+            parse_labels("img", "id".into(), labels),
+            Err(ImageError::InvalidLabel(_, "playground.views", _))
+        ));
     }
 
     #[test]

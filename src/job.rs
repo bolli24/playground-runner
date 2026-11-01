@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Limits;
+use crate::image::ImageInfo;
 
 /// A program to compile and run.
 #[derive(Debug, Clone, Deserialize)]
@@ -13,6 +14,17 @@ pub struct Job {
     pub entry: String,
     #[serde(default)]
     pub stdin: String,
+    /// Intermediate representations to print while compiling, from the image's
+    /// `playground.views`.
+    #[serde(default)]
+    pub views: Vec<String>,
+    /// Whether to run the program after compiling it.
+    #[serde(default = "default_run")]
+    pub run: bool,
+}
+
+fn default_run() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +54,8 @@ pub enum JobError {
     SourcesTooLarge(usize, usize),
     #[error("stdin is too large ({0} bytes, at most {1})")]
     StdinTooLarge(usize, usize),
+    #[error("unknown view '{0}', available: {1}")]
+    UnknownView(String, String),
 }
 
 const MAX_SEGMENTS: usize = 3;
@@ -65,9 +79,9 @@ fn is_valid_segment(segment: &str) -> bool {
 }
 
 impl Job {
-    /// Validate the job against the contract and the limits. `extensions` are the image's
-    /// `playground.extensions`, including the dot.
-    pub fn validate(&self, extensions: &[String], limits: &Limits) -> Result<(), JobError> {
+    /// Validate the job against the image it runs on and the limits.
+    pub fn validate(&self, image: &ImageInfo, limits: &Limits) -> Result<(), JobError> {
+        let extensions = &image.extensions;
         if self.files.is_empty() {
             return Err(JobError::NoFiles);
         }
@@ -123,6 +137,15 @@ impl Job {
             ));
         }
 
+        if let Some(view) = self.views.iter().find(|view| !image.views.contains(view)) {
+            let available = if image.views.is_empty() {
+                "none".to_string()
+            } else {
+                image.views.join(", ")
+            };
+            return Err(JobError::UnknownView(view.clone(), available));
+        }
+
         Ok(())
     }
 }
@@ -143,11 +166,22 @@ mod tests {
                 .collect(),
             entry: entry.into(),
             stdin: String::new(),
+            views: Vec::new(),
+            run: true,
         }
     }
 
     fn validate(job: &Job) -> Result<(), JobError> {
-        job.validate(&[".luga".into()], &Limits::default())
+        let image = ImageInfo {
+            id: "id".into(),
+            contract: 1,
+            language: "luga".into(),
+            extensions: vec![".luga".into()],
+            capabilities: Vec::new(),
+            views: vec!["mir".into(), "asm".into()],
+            revision: "abc".into(),
+        };
+        job.validate(&image, &Limits::default())
     }
 
     #[test]
@@ -211,6 +245,18 @@ mod tests {
         assert_eq!(
             validate(&job(&["a.luga"], "b.luga")),
             Err(JobError::MissingEntry("b.luga".into()))
+        );
+    }
+
+    #[test]
+    fn checks_views_against_image() {
+        let mut job = job(&["main.luga"], "main.luga");
+        job.views = vec!["asm".into(), "mir".into()];
+        assert_eq!(validate(&job), Ok(()));
+        job.views = vec!["mir".into(), "hir".into()];
+        assert_eq!(
+            validate(&job),
+            Err(JobError::UnknownView("hir".into(), "mir, asm".into()))
         );
     }
 }

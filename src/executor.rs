@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -18,6 +19,14 @@ use crate::job::{Job, JobError};
 /// Written by the adapter to stdout and stderr between the compile and run phases.
 pub const MARKER: &[u8] = b"\x1ePLAYGROUND-RUN\x1e\n";
 
+/// Starts a view in the compile phase's stdout: `\x1ePLAYGROUND-VIEW <name>\x1e\n`, followed by
+/// the view's text up to the next header or the end of the compile output.
+const VIEW_HEADER: &[u8] = b"\x1ePLAYGROUND-VIEW ";
+const VIEW_HEADER_END: &[u8] = b"\x1e\n";
+
+/// Longer views are cut and marked as truncated.
+pub const VIEW_BYTES: usize = 256 * 1024;
+
 /// Exit code the adapter uses for compile errors in the user's program.
 const EXIT_COMPILE_ERROR: i32 = 100;
 
@@ -33,6 +42,8 @@ pub enum Phase {
 pub enum Outcome {
     /// The program ran and exited, see `exit_code`.
     Exited,
+    /// The program compiled and wasn't run, because the job asked not to.
+    Compiled,
     /// The program doesn't compile; the compile output explains why.
     CompileError,
     /// The image or toolchain is broken.
@@ -54,8 +65,20 @@ pub struct RunResult {
     pub compile: Output,
     /// Present when the run phase was reached.
     pub run: Option<Output>,
+    /// The requested views the adapter printed. A view is missing when the compiler failed
+    /// before producing it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub views: BTreeMap<String, View>,
     /// Commit the image was built from.
     pub revision: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct View {
+    pub content: String,
+    /// The view was longer than `VIEW_BYTES` and was cut.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +120,15 @@ struct Captured {
     marker_at: Option<Instant>,
 }
 
+/// Output limits shared by stdout and stderr, one for each phase.
+#[derive(Clone)]
+struct Budget {
+    compile: Arc<AtomicUsize>,
+    run: Arc<AtomicUsize>,
+    compile_limit: usize,
+    run_limit: usize,
+}
+
 impl Executor {
     pub fn new(config: Config) -> Self {
         Self { config }
@@ -122,13 +154,11 @@ impl Executor {
 
     /// Run a job on a specific image instead of the one configured for its language.
     pub async fn run_on(&self, image: &ImageInfo, job: &Job) -> Result<RunResult, ExecError> {
-        job.validate(&image.extensions, &self.config.limits)?;
+        job.validate(image, &self.config.limits)?;
 
         let dir = self.prepare(job)?;
         let name = container_name();
-        let result = self
-            .run_container(image, &name, dir.path(), &job.entry)
-            .await;
+        let result = self.run_container(image, &name, dir.path(), job).await;
         self.docker(&["rm", "--force", &name]).await;
         result
     }
@@ -158,7 +188,7 @@ impl Executor {
         Ok(dir)
     }
 
-    fn docker_args(&self, image: &ImageInfo, name: &str, dir: &Path, entry: &str) -> Vec<String> {
+    fn docker_args(&self, image: &ImageInfo, name: &str, dir: &Path, job: &Job) -> Vec<String> {
         let limits = &self.config.limits;
         let mut args = vec!["run".to_string(), format!("--name={name}")];
         if let Some(runtime) = &self.config.runtime {
@@ -181,7 +211,9 @@ impl Executor {
             format!("--tmpfs=/tmp:size={}m", limits.tmp_tmpfs_mb),
             format!("--volume={}:/work/src:ro", dir.join("src").display()),
             format!("--volume={}:/work/stdin:ro", dir.join("stdin").display()),
-            format!("--env=PLAYGROUND_ENTRY={entry}"),
+            format!("--env=PLAYGROUND_ENTRY={}", job.entry),
+            format!("--env=PLAYGROUND_VIEWS={}", job.views.join(",")),
+            format!("--env=PLAYGROUND_RUN={}", u8::from(job.run)),
             "--env=HOME=/tmp".to_string(),
             "--env=TMPDIR=/tmp".to_string(),
             "--env=NO_COLOR=1".to_string(),
@@ -196,30 +228,33 @@ impl Executor {
         image: &ImageInfo,
         name: &str,
         dir: &Path,
-        entry: &str,
+        job: &Job,
     ) -> Result<RunResult, ExecError> {
         let limits = &self.config.limits;
         let started = Instant::now();
         let mut child = Command::new(&self.config.docker)
-            .args(self.docker_args(image, name, dir, entry))
+            .args(self.docker_args(image, name, dir, job))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
 
-        let total = Arc::new(AtomicUsize::new(0));
+        let budget = Budget {
+            compile: Arc::new(AtomicUsize::new(0)),
+            run: Arc::new(AtomicUsize::new(0)),
+            compile_limit: limits.compile_output_bytes,
+            run_limit: limits.output_bytes,
+        };
         let over = Arc::new(Notify::new());
         let stdout = tokio::spawn(capture(
             child.stdout.take().expect("stdout is piped"),
-            total.clone(),
-            limits.output_bytes,
+            budget.clone(),
             over.clone(),
         ));
         let stderr = tokio::spawn(capture(
             child.stderr.take().expect("stderr is piped"),
-            total,
-            limits.output_bytes,
+            budget,
             over.clone(),
         ));
 
@@ -258,10 +293,12 @@ impl Executor {
             End::Exited if oom_killed => Outcome::OutOfMemory,
             End::Exited if phase == Phase::Run => Outcome::Exited,
             End::Exited if exit_code == EXIT_COMPILE_ERROR => Outcome::CompileError,
+            End::Exited if exit_code == 0 && !job.run => Outcome::Compiled,
             End::Exited => Outcome::ToolchainError,
         };
 
         let (compile_stdout, run_stdout) = split_at_marker(&stdout.buf);
+        let (compile_stdout, views) = split_views(compile_stdout, &job.views);
         let (compile_stderr, run_stderr) = split_at_marker(&stderr.buf);
         let compile_end = stdout.marker_at.unwrap_or(finished);
 
@@ -279,6 +316,7 @@ impl Executor {
                 stderr: lossy(run_stderr.unwrap_or_default()),
                 duration_ms: millis(finished - marker_at),
             }),
+            views,
             revision: image.revision.clone(),
         })
     }
@@ -315,13 +353,12 @@ impl Executor {
     }
 }
 
-/// Read a stream until it ends, keeping at most `limit` bytes shared with the other stream.
-/// Once the limit is reached, `over` is notified and the rest is drained and discarded, so
-/// docker never blocks on a full pipe.
+/// Read a stream until it ends, keeping at most as many bytes as the budget of the current phase
+/// allows, shared with the other stream. Once a limit is reached, `over` is notified and the rest
+/// is drained and discarded, so docker never blocks on a full pipe.
 async fn capture(
     mut reader: impl AsyncRead + Unpin,
-    total: Arc<AtomicUsize>,
-    limit: usize,
+    budget: Budget,
     over: Arc<Notify>,
 ) -> io::Result<Captured> {
     let mut captured = Captured::default();
@@ -336,6 +373,12 @@ async fn capture(
             continue;
         }
 
+        // A read containing the marker counts against the compile budget as a whole, so the run
+        // phase can get up to one read's worth of extra room
+        let (total, limit) = match captured.marker_at {
+            None => (&budget.compile, budget.compile_limit),
+            Some(_) => (&budget.run, budget.run_limit),
+        };
         // The marker may be split across reads, so search a little before the new bytes too
         let search_from = captured.buf.len().saturating_sub(MARKER.len() - 1);
         let room = limit.saturating_sub(total.fetch_add(n, Ordering::Relaxed));
@@ -362,6 +405,39 @@ fn split_at_marker(buf: &[u8]) -> (&[u8], Option<&[u8]>) {
         Some(i) => (&buf[..i], Some(&buf[i + MARKER.len()..])),
         None => (buf, None),
     }
+}
+
+/// Split compile stdout into the compiler's own output and the views printed after it. Views that
+/// weren't requested are dropped, and each view is cut to `VIEW_BYTES`.
+fn split_views<'a>(buf: &'a [u8], requested: &[String]) -> (&'a [u8], BTreeMap<String, View>) {
+    let mut views = BTreeMap::new();
+    let Some(first) = find(buf, VIEW_HEADER) else {
+        return (buf, views);
+    };
+
+    let mut rest = &buf[first..];
+    while let Some(header) = rest.strip_prefix(VIEW_HEADER) {
+        // A header cut off by the output limit ends the views
+        let Some(name_end) = find(header, VIEW_HEADER_END) else {
+            break;
+        };
+        let body = &header[name_end + VIEW_HEADER_END.len()..];
+        let body_end = find(body, VIEW_HEADER).unwrap_or(body.len());
+        let content = &body[..body_end];
+        if let Ok(name) = std::str::from_utf8(&header[..name_end])
+            && requested.iter().any(|view| view == name)
+        {
+            views.insert(
+                name.to_string(),
+                View {
+                    content: lossy(&content[..content.len().min(VIEW_BYTES)]),
+                    truncated: content.len() > VIEW_BYTES,
+                },
+            );
+        }
+        rest = &body[body_end..];
+    }
+    (&buf[..first], views)
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -421,14 +497,45 @@ mod tests {
         assert_eq!(run, None);
     }
 
+    #[test]
+    fn splits_views_from_compile_output() {
+        let buf = b"warning\n\x1ePLAYGROUND-VIEW hir\x1e\nfn main\n\
+            \x1ePLAYGROUND-VIEW other\x1e\nx\n\x1ePLAYGROUND-VIEW mir\x1e\nbb0\n";
+        let requested = vec!["mir".to_string(), "hir".to_string(), "asm".to_string()];
+        let (compile, views) = split_views(buf, &requested);
+        assert_eq!(compile, b"warning\n");
+        assert_eq!(views.keys().collect::<Vec<_>>(), ["hir", "mir"]);
+        assert_eq!(views["hir"].content, "fn main\n");
+        assert_eq!(views["mir"].content, "bb0\n");
+        assert!(!views["mir"].truncated);
+    }
+
+    #[test]
+    fn truncates_long_views_and_ignores_cut_headers() {
+        let mut buf = b"\x1ePLAYGROUND-VIEW mir\x1e\n".to_vec();
+        buf.extend(vec![b'x'; VIEW_BYTES + 1]);
+        buf.extend(b"\x1ePLAYGROUND-VIEW h");
+        let (compile, views) = split_views(&buf, &["mir".to_string(), "hir".to_string()]);
+        assert!(compile.is_empty());
+        assert_eq!(views.len(), 1);
+        assert_eq!(views["mir"].content.len(), VIEW_BYTES);
+        assert!(views["mir"].truncated);
+    }
+
     #[tokio::test]
-    async fn capture_finds_split_marker_and_caps_output() {
+    async fn capture_finds_split_marker_and_caps_output_per_phase() {
         let (mut writer, reader) = tokio::io::duplex(4);
-        let over = Arc::new(Notify::new());
-        let task = tokio::spawn(capture(reader, Arc::new(AtomicUsize::new(0)), 30, over));
+        let budget = Budget {
+            compile: Arc::new(AtomicUsize::new(0)),
+            run: Arc::new(AtomicUsize::new(0)),
+            compile_limit: 1024,
+            run_limit: 10,
+        };
+        let task = tokio::spawn(capture(reader, budget, Arc::new(Notify::new())));
+        let compile_output = b"ab\x1ePLAYGROUND-RUN\x1e\n";
         tokio::io::AsyncWriteExt::write_all(
             &mut writer,
-            b"ab\x1ePLAYGROUND-RUN\x1e\nprogram output that is too long",
+            &[&compile_output[..], b"program output that is too long"].concat(),
         )
         .await
         .unwrap();
@@ -436,6 +543,8 @@ mod tests {
 
         let captured = task.await.unwrap().unwrap();
         assert!(captured.marker_at.is_some());
-        assert_eq!(captured.buf.len(), 30);
+        // The read containing the end of the marker may include up to 3 bytes of program output
+        let program_output = captured.buf.len() - compile_output.len();
+        assert!((10..=13).contains(&program_output), "{program_output}");
     }
 }

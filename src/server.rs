@@ -86,6 +86,7 @@ struct LanguageInfo {
     contract: u32,
     extensions: Vec<String>,
     capabilities: Vec<String>,
+    views: Vec<String>,
     /// URL of the linter module, relative to the API's origin.
     linter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,6 +102,7 @@ impl LanguageInfo {
             contract: image.contract,
             extensions: image.extensions.clone(),
             capabilities: image.capabilities.clone(),
+            views: image.views.clone(),
             linter: snapshot.has_linter.then(|| {
                 format!(
                     "/v1/assets/{}/{}/linter/index.js",
@@ -142,7 +144,7 @@ async fn run(
         .registry
         .get(&job.language)
         .ok_or_else(|| ApiError::UnknownLanguage(job.language.clone()))?;
-    job.validate(&snapshot.image.extensions, &state.executor.config().limits)?;
+    job.validate(&snapshot.image, &state.executor.config().limits)?;
     let admission = state
         .admission
         .clone()

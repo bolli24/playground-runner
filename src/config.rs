@@ -63,8 +63,11 @@ pub struct Limits {
     pub memory_mb: u64,
     pub pids: u64,
     pub cpus: f64,
-    /// Combined stdout and stderr size. The container is killed when it's exceeded.
+    /// Combined stdout and stderr size of the program. The container is killed when it's
+    /// exceeded.
     pub output_bytes: usize,
+    /// The same for the compile phase, which also carries the views.
+    pub compile_output_bytes: usize,
     pub build_tmpfs_mb: u64,
     pub tmp_tmpfs_mb: u64,
     pub max_files: usize,
@@ -80,6 +83,7 @@ impl Default for Limits {
             pids: 64,
             cpus: 1.0,
             output_bytes: 64 * 1024,
+            compile_output_bytes: 1024 * 1024,
             build_tmpfs_mb: 64,
             tmp_tmpfs_mb: 64,
             max_files: 32,

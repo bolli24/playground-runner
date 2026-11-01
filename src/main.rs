@@ -47,6 +47,12 @@ enum Command {
         /// File to use as the program's stdin.
         #[arg(long)]
         stdin: Option<PathBuf>,
+        /// Views to print while compiling, comma-separated, e.g. `hir,mir`.
+        #[arg(long, value_delimiter = ',')]
+        views: Vec<String>,
+        /// Only compile the program.
+        #[arg(long)]
+        no_run: bool,
         dir: PathBuf,
     },
     /// Check an image against the contract by running its fixtures and examples.
@@ -80,8 +86,23 @@ async fn main() -> ExitCode {
             lang,
             entry,
             stdin,
+            views,
+            no_run,
             dir,
-        } => exec(config, lang, entry, stdin, &dir).await,
+        } => {
+            let job = match read_job(lang, entry, stdin.as_deref(), &dir) {
+                Ok(job) => Job {
+                    views,
+                    run: !no_run,
+                    ..job
+                },
+                Err(err) => {
+                    eprintln!("error: unable to read program: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            exec(config, job).await
+        }
         Command::Contract {
             lang,
             image,
@@ -176,21 +197,7 @@ async fn shutdown_signal() {
     }
 }
 
-async fn exec(
-    config: Config,
-    language: String,
-    entry: String,
-    stdin: Option<PathBuf>,
-    dir: &Path,
-) -> ExitCode {
-    let job = match read_job(language, entry, stdin.as_deref(), dir) {
-        Ok(job) => job,
-        Err(err) => {
-            eprintln!("error: unable to read program: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
+async fn exec(config: Config, job: Job) -> ExitCode {
     match Executor::new(config).run(&job).await {
         Ok(result) => {
             let json = serde_json::to_string_pretty(&result).expect("result is serializable");
@@ -217,6 +224,8 @@ fn read_job(language: String, entry: String, stdin: Option<&Path>, dir: &Path) -
         files,
         entry,
         stdin,
+        views: Vec::new(),
+        run: true,
     })
 }
 
